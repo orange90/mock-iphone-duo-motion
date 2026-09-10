@@ -8,11 +8,9 @@ An iPhone motion-driven optical display experiment, built with SwiftUI, Core Mot
 
 ## 效果与范围
 
-| 正面 | 抬起 45° |
-|---|---|
-| ![正面预览](docs/preview-front.png) | ![45度光学预览](docs/preview-45.png) |
+https://github.com/user-attachments/assets/e4fe51bc-71b5-4b8f-b280-e75ff1173569
 
-截图来自模拟器，用于展示渲染变化；真实的跟手感与空间错觉需要拿着 iPhone 观察。显示内容来自项目内置测试图。
+实机对比演示：原始画面与模拟 iPhone Duo 翻盖效果。转动手机时，抬高侧逐渐模糊、变暗，靠近转轴的一侧保持更清晰。真实的跟手感与空间错觉需要拿着 iPhone 观察。
 
 - iPhone、iOS 17+，固定竖屏；SwiftUI + Core Motion + MetalKit。
 - 从系统照片选择器导入单张照片，支持填满/完整显示；最长边缩小到 2048 像素。
