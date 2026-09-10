@@ -1,0 +1,37 @@
+name: BoxDepth
+options:
+  bundleIdPrefix: org.example
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    ENABLE_DEBUG_DYLIB: NO
+    SWIFT_VERSION: '5.0'
+    IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+    TARGETED_DEVICE_FAMILY: '1'
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: NO
+targets:
+  BoxDepth:
+    type: application
+    platform: iOS
+    sources: [BoxDepth]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.MockIPhoneDuoMotion
+        INFOPLIST_FILE: BoxDepth/Info.plist
+    scheme:
+      gatherCoverageData: false
+      testTargets: [BoxDepthTests]
+
+  BoxDepthTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests/iOS]
+    dependencies:
+      - target: BoxDepth
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: YES
+        PRODUCT_BUNDLE_IDENTIFIER: org.example.MockIPhoneDuoMotionTests

@@ -1,0 +1,158 @@
+#include <metal_stdlib>
+using namespace metal;
+struct Uniforms { float4x4 rotation; float4 eye; float4 parameters; float4 viewport; };
+struct VertexOut { float4 position [[position]]; float2 uv; };
+vertex VertexOut fullScreenVertex(uint id [[vertex_id]]) {
+    float2 p = float2((id << 1) & 2, id & 2);
+    return {float4(p*2.0-1.0,0,1),float2(p.x,1.0-p.y)};
+}
+float hash21(float2 p) { return fract(sin(dot(p,float2(127.1,311.7)))*43758.5453); }
+float2 imageUV(float2 uv, float ratio, bool fit) {
+    if (fit) {
+        if (ratio>1) uv.y=(uv.y-0.5)*ratio+0.5;
+        else uv.x=(uv.x-0.5)/ratio+0.5;
+    } else {
+        if (ratio>1) uv.x=(uv.x-0.5)/ratio+0.5;
+        else uv.y=(uv.y-0.5)*ratio+0.5;
+    }
+    return uv;
+}
+// Optical cover: all layers fill the display. Pose changes transmission and
+// diffusion, not the silhouette of a plane. Angles are relative to calibration.
+float3 opticalCover(float2 uv, float3 normal, constant Uniforms &u,
+                    texture2d<float> photo, texture2d<float> blurred,
+                    texture2d<float> slight, texture2d<float> heavy) {
+    constexpr sampler s(filter::linear,mip_filter::linear,address::clamp_to_edge);
+    float aspect=u.parameters.x, ratio=u.parameters.z/aspect;
+    float cosine=saturate(normal.z);
+    // A bounded optical-path proxy, normalized to zero at calibration. This
+    // is an art-directed absorption model, not a measured glass thickness.
+    // The soft denominator avoids a singularity or a hard clamp near grazing.
+    float path=max(0.0,sqrt(1.09)*rsqrt(cosine*cosine+0.09)-1.0);
+    // Bounded parallax and fixed overscan: no tangent singularity at 90 degrees.
+    float2 shift=float2(normal.x,-normal.y)*u.parameters.y*0.12;
+    float2 sceneUV=(uv-0.5)*0.94+0.5+shift;
+    if (u.parameters.w>0.5) sceneUV=uv; // complete image retains its frame
+    float2 mapped=imageUV(sceneUV,ratio,u.parameters.w>0.5);
+    float lod=max(0.0,log2(max(float(photo.get_width())/u.viewport.x,float(photo.get_height())/u.viewport.y)));
+    float3 a=photo.sample(s,mapped,level(lod)).rgb;
+    float3 b=slight.sample(s,mapped,level(0)).rgb;
+    float3 c=blurred.sample(s,mapped,level(0)).rgb;
+    float3 d=heavy.sample(s,mapped,level(0)).rgb;
+    // Adjacent blur levels, rather than mixing sharp text into a heavy haze.
+    // Height gradient above the calibrated display plane. A positive pitch
+    // lifts the top; yaw lifts a side. Infer the lowest edge as the hinge.
+    // Use rotation columns (local axes), not the world-space normal: this
+    // keeps diagonal tilts and combined rotations in screen coordinates.
+    float2 heightGradient=float2(u.rotation[0].z*aspect,u.rotation[1].z);
+    float span=abs(heightGradient.x)+abs(heightGradient.y);
+    float height=dot(float2(uv.x-0.5,0.5-uv.y),heightGradient);
+    float lifted=saturate(0.5+height/sqrt(span*span+0.000001));
+    float thickness=smoothstep(0.0,1.0,lifted);
+    // Separate scattering and absorption responses share the same local
+    // thickness. Keep the hinge transmissive; the lifted region loses light
+    // increasingly at larger angles, while retaining image beneath the cover.
+    float scattering=path*(0.10+3.0*thickness);
+    // A visible smoked shadow must develop by 45 degrees. Linear-light
+    // attenuation alone looked too weak after the display's sRGB encoding.
+    // Ease the additional high-side shadow in between 20 and 50 degrees;
+    // keep scattering unchanged and avoid a threshold at exactly 45 degrees.
+    float shadowAngle=smoothstep(0.0603074,0.3572124,1.0-cosine);
+    float shadowDensity=1.85*shadowAngle*pow(thickness,1.15);
+    float absorption=path*(0.06+1.65*thickness)+shadowDensity;
+    float level=3.0*(1.0-exp(-scattering));
+    float transmission=exp(-absorption);
+    float3 color=level<1?mix(a,b,level):level<2?mix(b,c,level-1):mix(c,d,level-2);
+    if (any(mapped<0)||any(mapped>1)) color=float3(0.025,0.031,0.045);
+    color*=transmission;
+    // Broad reflected light travels independently above the image. Procedural
+    // environment only: no camera or claim of a real room reflection.
+    float2 r=uv+float2(normal.x,-normal.y)*0.8;
+    float band=exp(-pow((r.x*0.75+r.y*0.38-0.48)/0.24,2.0));
+    float highlight=exp(-pow((r.x*0.65-r.y*0.32-0.15)/0.09,2.0));
+    float fresnel=pow(1.0-saturate(normal.z),3.0);
+    float reflection=(0.006+0.16*fresnel)*band+0.025*(1.0-exp(-path))*highlight;
+    // Reflection belongs to the cover, so it is not attenuated a second time.
+    // A dim environment preserves the smoked appearance instead of washing
+    // the absorbed image out with a bright gray veil.
+    color=mix(color,float3(0.075,0.083,0.097),saturate(reflection));
+    return color;
+}
+fragment float4 boxFragment(VertexOut in [[stage_in]], constant Uniforms &u [[buffer(0)]],
+                            texture2d<float> photo [[texture(0)]], texture2d<float> blurred [[texture(1)]],
+                            texture2d<float> slight [[texture(2)]], texture2d<float> heavy [[texture(3)]]) {
+    constexpr sampler s(filter::linear,mip_filter::linear,address::clamp_to_edge);
+    float aspect=u.parameters.x, depth=u.parameters.y, ratio=u.parameters.z/aspect;
+    float3 hinge=float3(0,-0.5,0);
+    float3 local=float3((in.uv.x-0.5)*aspect,0.5-in.uv.y,0);
+    float3 screen=hinge+(u.rotation*float4(local-hinge,0)).xyz;
+    float3 normal=(u.rotation*float4(0,0,1,0)).xyz;
+    float3 eye=u.eye.xyz;
+    // Visibility always uses the real pose, even when optical compensation is reduced.
+    float facing=u.viewport.w>0.5 ? normal.z : u.viewport.z;
+    float visibility=smoothstep(0.015,0.13,facing);
+    float3 dark=u.viewport.w>0.5 ? float3(0.004,0.006,0.009) : float3(0.035,0.043,0.048);
+    if (!isfinite(facing) || visibility<=0) return float4(dark,1);
+    // Explicit LOD keeps sampling defined across ray-hit branches, avoiding
+    // derivative discontinuities along the moving glass boundary.
+    float lod=clamp(log2(max(float(photo.get_width())/u.viewport.x,float(photo.get_height())/u.viewport.y)/max(facing,0.18)),0.0,5.0);
+    if (u.viewport.w>0.5) {
+        float3 color=opticalCover(in.uv,normal,u,photo,blurred,slight,heavy);
+        return float4(mix(dark,color,visibility),1);
+    }
+    float3 ray=screen-eye;
+    float nearest=1e20;
+    float3 hit=float3(0);
+    int surface=-1;
+    for (int i=0;i<5;++i) {
+        int axis=i==0?2:(i<3?0:1);
+        float value=i==0?-depth:(i==1?-aspect/2:(i==2?aspect/2:(i==3?-0.5:0.5)));
+        if (abs(ray[axis])<1e-6) continue;
+        float t=(value-eye[axis])/ray[axis];
+        if (!isfinite(t) || t<=1.00001 || t>=nearest) continue;
+        float3 p=eye+t*ray;
+        bool inside=i==0 ? abs(p.x)<=aspect/2+1e-5 && abs(p.y)<=0.5+1e-5 :
+            p.z>=-depth-1e-5 && p.z<=1e-5 && (axis==0?abs(p.y)<=0.5+1e-5:abs(p.x)<=aspect/2+1e-5);
+        if (inside) { nearest=t; hit=p; surface=i; }
+    }
+    // The aperture's outer region transmits a blurred echo of the same photo;
+    // it is never a large opaque cardboard patch during a tilt.
+    float2 glassUV=imageUV(in.uv+normal.xy*depth*0.35,ratio,false);
+    float3 ambient=blurred.sample(s,glassUV,level(0)).rgb;
+    float3 glass=mix(ambient,float3(0.78,0.84,0.86),0.24);
+    float3 color=glass;
+    if (surface==0) {
+        float2 baseUV=float2(hit.x/aspect+0.5,0.5-hit.y);
+        float2 uv=imageUV(baseUV,ratio,u.parameters.w>0.5);
+        float3 soft=blurred.sample(s,imageUV(baseUV,ratio,false),level(0)).rgb;
+        float3 sharp=all(uv>=0)&&all(uv<=1)?photo.sample(s,uv,level(lod)).rgb:mix(soft,float3(0.83,0.86,0.87),0.70);
+        float edge=min(aspect/2-abs(hit.x),0.5-abs(hit.y));
+        float edgeFrost=0.48*exp(-max(edge,0.0)/(0.006+depth*0.17));
+        color=mix(sharp,soft,0.025+edgeFrost);
+        float contact=1.0-0.17*exp(-max(edge,0.0)/(0.002+depth*0.13));
+        color*=contact;
+        // Continuous transition into the frosted wall at the floor boundary.
+        color=mix(mix(soft,float3(0.80,0.85,0.87),0.15)*0.86,color,smoothstep(0.0,0.004,edge));
+    } else if (surface>0) {
+        float2 edgeUV=imageUV(float2(hit.x/aspect+0.5,0.5-hit.y),ratio,false);
+        float3 transmitted=blurred.sample(s,edgeUV+normal.xy*0.012,level(0)).rgb;
+        float3 n=surface==1?float3(1,0,0):surface==2?float3(-1,0,0):surface==3?float3(0,1,0):float3(0,-1,0);
+        float height=saturate((hit.z+depth)/depth);
+        float light=0.92+0.07*dot(n,normalize(float3(-0.5,0.7,1)));
+        float contact=1.0-0.14*exp(-height*7.0);
+        color=mix(transmitted,float3(0.81,0.87,0.89),0.15+height*0.14)*light*contact;
+        // Narrow bright bevel, broad diffusion: frosted thickness, no hard outline.
+        color+=float3(0.035)*pow(height,9.0);
+    }
+    float screenEdge=min(min(in.uv.x,1-in.uv.x)*aspect,min(in.uv.y,1-in.uv.y));
+    float rim=exp(-max(screenEdge,0.0)/0.0025);
+    float frost=0.05*exp(-max(screenEdge,0.0)/0.025);
+    color=mix(glass,color,smoothstep(0.001,0.006,screenEdge));
+    color=mix(color,glass,frost);
+    color+=rim*float3(0.035,0.040,0.045);
+    // Very broad and weak reflection moves with pose, without a white veil over the photo.
+    float reflection=exp(-pow((in.uv.x*0.42+in.uv.y*0.35-0.2-normal.x*0.22-normal.y*0.12)/0.24,2.0));
+    color=mix(color,float3(0.91,0.95,0.97),reflection*0.018);
+    color+=(hash21(in.uv*u.viewport.xy)-0.5)*0.0015;
+    return float4(mix(dark,color,visibility),1);
+}

@@ -1,0 +1,28 @@
+# macOS / Xcode user data
+.DS_Store
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+# Local signing overrides
+Signing.local.xcconfig
+*.mobileprovision
+*.provisionprofile
+*.p12
+*.pfx
+*.cer
+*.pem
+*.key
+*.p8
+# Build products and logs
+build/
+DerivedData/
+*.app/
+*.ipa
+*.xcarchive/
+*.dSYM/
+*.xcresult/
+*.log
+# Local environment / credentials
+.env
+.env.*
+!.env.example
